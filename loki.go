@@ -27,6 +27,8 @@ const (
 	maxErrMsgLen = 1024
 )
 
+var defaultLabels = []string{"level", "hostname"}
+
 type entry struct {
 	labels model.LabelSet
 	*Entry
@@ -34,35 +36,37 @@ type entry struct {
 
 type Loki struct {
 	entry
-	LokiURL   string
-	BatchWait time.Duration
-	BatchSize int
-	lineChan  chan *logrus.Entry
-	hostname  string
-	data      map[model.LabelName]model.LabelValue
-	wg        sync.WaitGroup
+	LokiURL     string
+	BatchWait   time.Duration
+	BatchSize   int
+	LabelFields []string
+	lineChan    chan *logrus.Entry
+	hostname    string
+	data        map[model.LabelName]model.LabelValue
+	wg          sync.WaitGroup
 }
 
-func NewLoki(URL string, batchSize int, batchWait time.Duration) (*Loki, error) {
+func NewLoki(URL string, batchSize int, batchWait time.Duration, labelFields []string) (*Loki, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
-	return NewLokiCustomHostname(URL, batchSize, batchWait, hostname)
+	return NewLokiCustomHostname(URL, batchSize, batchWait, hostname, labelFields)
 }
 
 func NewLokiDefaults(URL string) (*Loki, error) {
-	return NewLoki(URL, 1024*1024, time.Second)
+	return NewLoki(URL, 1024*1024, time.Second, []string{})
 }
 
-func NewLokiCustomHostname(URL string, batchSize int, batchWait time.Duration, hostname string) (*Loki, error) {
+func NewLokiCustomHostname(URL string, batchSize int, batchWait time.Duration, hostname string, labelFields []string) (*Loki, error) {
 	l := &Loki{
-		LokiURL:   URL,
-		BatchSize: batchSize,
-		BatchWait: batchWait,
-		lineChan:  make(chan *logrus.Entry, batchSize),
-		data:      make(map[model.LabelName]model.LabelValue),
-		hostname:  hostname,
+		LokiURL:     URL,
+		BatchSize:   batchSize,
+		BatchWait:   batchWait,
+		LabelFields: labelFields,
+		lineChan:    make(chan *logrus.Entry, batchSize),
+		data:        make(map[model.LabelName]model.LabelValue),
+		hostname:    hostname,
 	}
 
 	u, err := url.Parse(l.LokiURL)
@@ -136,9 +140,17 @@ func (l *Loki) run() {
 			l.entry = entry{model.LabelSet{}, &Entry{Timestamp: ts}}
 			l.entry.labels["level"] = model.LabelValue(ll.Level.String())
 			l.entry.labels["hostname"] = model.LabelValue(l.hostname)
-			for key, value := range ll.Data {
-				l.entry.labels[model.LabelName(key)] = model.LabelValue(fmt.Sprintf("%v", value))
+			labelFieldMap := make(map[string]struct{})
+			for _, labelField := range l.LabelFields {
+				labelFieldMap[labelField] = struct{}{}
 			}
+
+			for key, value := range ll.Data {
+				if _, ok := labelFieldMap[key]; ok {
+					l.entry.labels[model.LabelName(key)] = model.LabelValue(fmt.Sprintf("%v", value))
+				}
+			}
+
 			for key, value := range l.data {
 				l.entry.labels[key] = value
 			}
